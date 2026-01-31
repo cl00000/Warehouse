@@ -1,0 +1,155 @@
+import time
+import threading
+from datetime import datetime, timedelta
+from function_config_manager import load_config, save_config
+
+
+class CounterManager:
+    _instance = None
+    _lock = threading.Lock()
+    _last_increment_time = 0  # 记录最后一次有效计数的时间戳
+    _last_click_times = []    # 记录最近点击时间戳（仅用于速度计算）
+
+    def __new__(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._init_counters()
+            return cls._instance
+
+    def _init_counters(self):
+        config = load_config()
+        now = datetime.now()
+
+        self._last_increment_time = config.get("last_click_timestamp", 0)
+        self._last_click_times = []  # 只在内存中保存，不写入配置
+
+        # 每日5点重置检查
+        current_day = self._get_current_day()
+        if config["last_count_day"] != current_day:
+            config["today_count"] = 0
+            config["last_count_day"] = current_day
+            save_config(config)
+
+        # 会话超时检查（1分钟）
+        if time.time() - config["last_click_timestamp"] > 60:
+            config["session_count"] = 0
+            save_config(config)
+
+        self._config = config
+
+    def _get_current_day(self):
+        now = datetime.now()
+        if now.hour < 5:  # 凌晨5点前属于前一天
+            return (now - timedelta(days=1)).day
+        return now.day
+
+    def increment(self):
+        """标准计数方法（立即生效）"""
+        with self._lock:
+            self._unsafe_increment()
+
+    def increment_debounced(self):
+        """
+        防抖计数方法（3秒内只生效一次）
+        返回bool：True表示本次计数有效，False表示被忽略
+        """
+        with self._lock:
+            current_time = time.time()
+            if current_time - self._last_increment_time < 3:
+                return False
+
+            self._unsafe_increment()
+            return True
+
+    def _unsafe_increment(self):
+        """实际执行计数操作的内部方法（需在锁内调用）"""
+        current_time = time.time()
+        config = load_config()
+        current_day = self._get_current_day()
+
+        # 每日5点重置
+        if config["last_count_day"] != current_day:
+            config["today_count"] = 0
+            config["last_count_day"] = current_day
+
+        # 更新主计数器（不受速度计算影响）
+        config["today_count"] += 1  # 总是增加今日计数
+        config["session_count"] += 1 # 总是增加本次计数
+        config["last_click_timestamp"] = current_time
+
+        # 记录当前点击时间（仅用于速度计算）
+        self._last_click_times.append(current_time)
+
+        # 清理1分钟前的记录（仅影响速度计算）
+        one_minute_ago = current_time - 60
+        self._last_click_times = [t for t in self._last_click_times if t >= one_minute_ago]
+
+        self._last_increment_time = current_time
+        save_config(config)
+
+    def get_counts(self):
+        """获取今日和本次的录入数量"""
+        config = load_config()
+
+        # 运行时检查重置条件
+        current_day = self._get_current_day()
+        if config["last_count_day"] != current_day:
+            config["today_count"] = 0
+            config["last_count_day"] = current_day
+            save_config(config)
+
+        if time.time() - config["last_click_timestamp"] > 60:
+            config["session_count"] = 0
+            save_config(config)
+
+        return config["today_count"], config["session_count"]
+
+    def get_average_time(self):
+        """
+        获取1分钟内的平均每单耗时（秒）
+        返回：
+        - 大于0：有效的平均耗时
+        - 0：1分钟内录入不足2次
+        """
+        with self._lock:
+            current_time = time.time()
+            one_minute_ago = current_time - 60
+
+            # 只计算1分钟内的录入
+            recent_clicks = [t for t in self._last_click_times if t >= one_minute_ago]
+
+            if len(recent_clicks) < 2:
+                return 0
+
+            # 计算时间间隔平均值
+            intervals = []
+            for i in range(1, len(recent_clicks)):
+                intervals.append(recent_clicks[i] - recent_clicks[i-1])
+
+            return sum(intervals) / len(intervals)
+
+
+# 全局访问点
+counter_manager = CounterManager()
+
+
+
+
+
+
+
+
+
+def update_counts(self):
+    # 获取并更新主计数器（不受速度计算影响）
+    today, session = counter_manager.get_counts()
+    self.today_label.setText(f"今日录入数量：{today}")
+    self.session_label.setText(f"本次录入数量：{session}")
+
+    # 获取并显示录入速度（独立计算）
+    average_time = counter_manager.get_average_time()
+    if average_time > 0:
+        self.speed_label.setText(f"录入速度：{average_time:.1f}秒/单")
+    else:
+        self.speed_label.setText("录入速度：--")  # 1分钟内录入不足2次

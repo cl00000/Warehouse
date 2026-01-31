@@ -1,0 +1,68 @@
+pyinstaller  --windowed --icon=fox.ico fairy.py
+
+git ls-files        列出所有被跟踪的文件
+git rm -r --cached __pycache__
+
+git log --oneline --graph --decorate --all
+git switch --detach 分支名
+
+
+合并到现有分支（保留修改）
+git checkout new-branch  # 切换到目标分支
+git merge d8c40db       # 合并提交
+git push origin new-branch  # 推送
+
+
+虚拟环境打包
+    pip install pipreqs
+        pipreqs ./ --encoding=utf8      列出所有的库
+
+    pip install pipenv              安装虚拟环境
+    pipenv install                  生成虚拟环境
+    pipenv shell                    激活虚拟环境
+    pipenv install pyinstaller      安装打包工具
+    pip install -r requirements.txt     把所有库安装到虚拟环境
+    pipenv run pyinstaller  --windowed --icon=fox.ico fairy.py
+
+    exit                                退出虚拟环境
+
+
+
+
+git config --global core.autocrlf true          让Git根据操作系统自动处理换行符（默认配置）
+
+cls 清理控制台
+
+--------------------------------------------------------------------------
+配置全局身份
+git config --global user.name "Honor"
+git config --global user.email "787990099@qq.com"
+
+
+使用 SSH 替代 HTTPS
+    如果 HTTPS 连接有问题，可以改用 SSH 协议：
+    确保你已添加 SSH 密钥到 GitHub（参考 GitHub SSH 文档）。
+    将远程仓库 URL 改为 SSH 格式：
+    git remote set-url origin git@github.com:cl00000/HKR.git
+然后再次尝试推送：
+    git push
+
+
+生成密钥对
+    ssh-keygen -t ed25519 -C "787990099@QQ.com"
+密钥对保存路径
+    C:\Users\78799/.ssh/id_ed25519
+        私钥：id_ed25519
+        公钥：id_ed25519.pub
+将公钥内容输出到屏幕
+    cat ~/.ssh/id_ed25519.pub
+GitHub 上添加公钥
+    SSH and GPG key ➡️ New SSH key
+测试 SSH 连接
+    ssh -T git@github.com
+        输出：
+            The authenticity of host 'GitHub.com (IP ADDRESS)' can't be established.
+            ED25519 key fingerprint is SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU.
+            Are you sure you want to continue connecting (yes/no/[fingerprint])?
+        输入:yes
+        输出：Hi your_GitHub_username! You've successfully authenticated, but GitHub does not provide shell access.

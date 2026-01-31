@@ -1,0 +1,25 @@
+[[source]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+verify_ssl = true
+name = "pip_conf_index_global"
+
+[packages]
+keyboard = "==0.13.5"
+mss = "==10.0.0"
+numpy = "==2.2.6"
+opencv-python = "==4.11.0.86"
+pandas = "==2.2.3"
+pillow = "==11.2.1"
+pyautogui = "==0.9.54"
+pyside6 = "==6.9.0"
+pyside6-addons = "==6.9.0"
+pyside6-essentials = "==6.9.0"
+pytesseract = "==0.3.13"
+pywin32 = "==310"
+xlsxwriter = "==3.2.2"
+pyinstaller = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.13"

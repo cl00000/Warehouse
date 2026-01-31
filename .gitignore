@@ -1,0 +1,59 @@
+# IDE 配置
+.idea/
+*.iml
+.idea/inspectionProfiles/
+.idea/misc.xml
+.idea/modules.xml
+.idea/vcs.xml
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 打包文件
+fairy.spec
+dist/
+build/  # 构建目录
+
+# 依赖锁文件
+Pipfile.lock  # 通常不提交锁文件
+
+# 临时/测试文件
+test/
+test.py
+
+# 可执行文件/二进制
+*.exe
+
+# 配置文件
+.env
+config.ini  # 如果有配置文件
+
+# Python 字节码和缓存
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+
+# PyInstaller 构建产物
+*.spec
+build/
+
+# 包和分发
+*.egg-info/
+.eggs/
+eggs/
+*.egg
+
+
+# 系统文件
+.DS_Store  # macOS
+Thumbs.db  # Windows
+
+# 日志和临时文件
+*.log
+*.tmp
+*.bak
