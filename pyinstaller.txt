@@ -66,3 +66,11 @@ GitHub 上添加公钥
             Are you sure you want to continue connecting (yes/no/[fingerprint])?
         输入:yes
         输出：Hi your_GitHub_username! You've successfully authenticated, but GitHub does not provide shell access.
+
+--------------------------------------------------------------------------
+
+添加仓库
+git remote add origin git@github.com:cl00000/distributor.git
+
+# 全局配置（对当前电脑所有 Git 仓库生效，推荐）
+git config --global push.autoSetupRemote true	#所有新建的本地分支，首次执行 git push 时会自动与远程同名分支建立跟踪关系

@@ -270,29 +270,32 @@ class ExcelContrastProcessor:
     def get_style(self, product_code, selector):
         product_code = str(product_code).strip()
         if not product_code or product_code == "NaN":
-            return "（未匹配到编码）"
+            return "（未匹配到编码）", 0
 
         code_list, quantities = self.parse_codes_and_quantities(product_code)
         if not code_list:
             self.filtered_count += 1
-            return None
+            return None, 0
         unmatched_codes = [code for code in quantities if code not in self.priority_dict]
 
         if unmatched_codes:
             self.has_unmatched_codes = True
             if len(unmatched_codes) == len(code_list):
-                return "（未匹配到编码）"
+                return "（未匹配到编码）", 0
             else:
-                return "（未匹配到部分编码）"
+                return "（未匹配到部分编码）", 0
 
         valid_codes = [code for code in code_list if code in self.priority_dict]
         if not valid_codes:
             self.has_unmatched_codes = True
-            return "（未匹配到编码）"
+            return "（未匹配到编码）", 0
 
         sorted_codes = tuple(sorted(valid_codes))
         selected_code = selector.select(valid_codes, quantities, self.priority_dict, sorted_codes)
-        return self.code_dict[selected_code] if selected_code else "（未匹配到编码）"
+        if selected_code:
+            return self.code_dict[selected_code], quantities[selected_code]
+        else:
+            return "（未匹配到编码）", 0
 
     def process_data(self, df1):
         result_data = []
@@ -333,13 +336,15 @@ class ExcelContrastProcessor:
                 self.processed_brush_waves.add(wave_str)
                 wave_stats['brush_waves'][wave_str].append(idx)
                 style = self.brush_style
+                qty = 1  # Assuming qty=1 for brush waves
                 order_type = "新订单"
                 data_list.append({
                     "订单渠道": order_channel,
                     "订单类型": order_type,
                     "款式": style,
                     "原始编码": str(row["货品商家编码"]).strip(),
-                    "波次": wave_str
+                    "波次": wave_str,
+                    "数量": qty
                 })
             else:
                 code_list, quantities = self.parse_codes_and_quantities(row["货品商家编码"])
@@ -349,7 +354,7 @@ class ExcelContrastProcessor:
                 elif code_list and len(code_list) < len(quantities):
                     wave_stats['priority100_filtered'][wave_str].append(idx)
 
-                style = self.get_style(row["货品商家编码"], selector)
+                style, qty = self.get_style(row["货品商家编码"], selector)
                 if style is None:
                     continue
 
@@ -363,7 +368,8 @@ class ExcelContrastProcessor:
                     "订单类型": order_type,
                     "款式": style,
                     "原始编码": str(row["货品商家编码"]).strip(),
-                    "波次": wave_str
+                    "波次": wave_str,
+                    "数量": qty
                 })
 
         if self.unmatched_waves:
@@ -441,7 +447,10 @@ class ExcelContrastProcessor:
 
         if data_list:
             temp_df = pd.DataFrame(data_list)
-            group_counts = temp_df.groupby(["订单渠道", "订单类型", "款式"]).size().reset_index(name='实打数量')
+            group_counts = temp_df.groupby(["订单渠道", "订单类型", "款式"]).agg(
+                单量=('数量', 'count'),
+                实际数量=('数量', 'sum')
+            ).reset_index()
 
             # 创建排序键：订单渠道优先级 + 订单类型优先级 + 款式排序值
             group_counts["订单渠道优先级"] = group_counts["订单渠道"].map(channel_priority)
@@ -464,7 +473,8 @@ class ExcelContrastProcessor:
                     row["订单渠道"],
                     row["订单类型"],
                     row["款式"],
-                    row["实打数量"],
+                    row["单量"],
+                    row["实际数量"],
                     row["款式"] == "（未匹配到编码）",
                     row["款式"] == "空值"
                 ])
@@ -477,7 +487,7 @@ class ExcelContrastProcessor:
         ws.title = "汇总结果"
         header_font = Font(color="FFFFFF", bold=True)
         header_fill = PatternFill(start_color="9999FF", end_color="9999FF", fill_type="solid")
-        headers = ["订单渠道", "订单类型", "款式", "实打数量"]
+        headers = ["订单渠道", "订单类型", "款式", "单量", "实际数量"]
         ws.append(headers)
 
         for col in range(1, len(headers) + 1):
@@ -486,7 +496,7 @@ class ExcelContrastProcessor:
             cell.fill = header_fill
 
         result_df = pd.DataFrame(result_data, columns=[
-            "订单渠道", "订单类型", "款式", "实打数量",
+            "订单渠道", "订单类型", "款式", "单量", "实际数量",
             "未匹配标记", "空值行标记"
         ])
 
@@ -522,19 +532,20 @@ class ExcelContrastProcessor:
                 result_df.iloc[main_idx]["订单渠道"],
                 result_df.iloc[main_idx]["订单类型"],
                 result_df.iloc[main_idx]["款式"],
-                result_df.iloc[main_idx]["实打数量"]
+                result_df.iloc[main_idx]["单量"],
+                result_df.iloc[main_idx]["实际数量"]
             ]
 
             # Write main data
             for col, val in enumerate(main_row, start=1):
                 ws.cell(row=actual_row, column=col, value=val)
 
-            # Apply colors for unmatched/empty - font red for col 3-4
+            # Apply colors for unmatched/empty - font red for col 3-5
             if result_df.iloc[main_idx]["空值行标记"]:
-                for col in range(3, 5):
+                for col in range(3, 6):
                     ws.cell(row=actual_row, column=col).font = color_map["red"]
             elif result_df.iloc[main_idx]["未匹配标记"] or result_df.iloc[main_idx]["款式"] == "（未匹配到部分编码）":
-                for col in range(3, 5):
+                for col in range(3, 6):
                     ws.cell(row=actual_row, column=col).font = color_map["red"]
 
             # Apply order channel color to col 1
@@ -563,7 +574,7 @@ class ExcelContrastProcessor:
                     ws.append([msg])
 
         # 设置列宽
-        column_widths = {'A': 15, 'B': 15, 'C': 30, 'D': 10}
+        column_widths = {'A': 15, 'B': 15, 'C': 30, 'D': 10, 'E': 15}
         for col, width in column_widths.items():
             ws.column_dimensions[col].width = width
 
