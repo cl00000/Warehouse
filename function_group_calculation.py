@@ -2,8 +2,10 @@ import pandas as pd
 from collections import defaultdict
 import os
 from datetime import datetime
+import time
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+from sub_table_handler import SubTableHandler
 
 
 class ExcelContrastProcessor:
@@ -11,31 +13,26 @@ class ExcelContrastProcessor:
         self.desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
         self.code_dict = {}
         self.priority_dict = {}
-        self.sort_dict = {}  # New: Dictionary for sort values
-        self.extra_shops = set()
-        self.excluded_waves = set()
-        self.brush_waves = set()
         self.messages = []
-        self.sub_table_messages = []  # New: Separate list for sub-table messages
         self.today_str = datetime.now().strftime("%y%m%d")
-        self.null_rows = []
-        self.has_null_values = False
         self.has_unmatched_codes = False
         self.non_today_waves = set()
-        self.non_today_wave_details = defaultdict(list)
-        self.excluded_type_waves = defaultdict(lambda: defaultdict(list))
-        self.invalid_orders = set()
         self.brush_style = "洗脸巾/其它包数"
-        self.filtered_count = 0
-        self.filtered_rows = []
-        self.processed_excluded_waves = set()
-        self.processed_brush_waves = set()
         self.COLOR_INFO = "green"
         self.COLOR_WARN = "purple"
         self.COLOR_ERROR = "red"
         self.unmatched_waves = defaultdict(list)
         self.partial_unmatched_waves = defaultdict(list)
-        self.no_channel_waves = defaultdict(list)  # 新增：存储没有渠道标签的波次
+        self.channel_colors = {}
+        self.order_type_colors = {}
+
+        # 新增：订单类型映射表
+        self.channel_type_map = []
+        # 新增：用于跟踪未匹配的映射关系
+        self.unmatched_mappings = defaultdict(list)
+
+        # 初始化副表处理器
+        self.sub_table_handler = SubTableHandler(self.desktop_path)
 
     def is_empty(self, value):
         if pd.isna(value):
@@ -47,9 +44,40 @@ class ExcelContrastProcessor:
     def load_data(self):
         file1_path = os.path.join(self.desktop_path, "1.xlsx")
         code_file_path = os.path.join(self.desktop_path, "编码对应关系.xlsx")
-        sub_table_path = os.path.join(self.desktop_path, "副表.xlsx")
 
         try:
+            try:
+                # 从"编码对应关系.xlsx"文件的"映射"sheet中读取
+                map_df = pd.read_excel(code_file_path, sheet_name="映射")
+                self.channel_type_map = []
+
+                # 检查必需的列是否存在
+                required_map_columns = ["渠道", "类型", "输出渠道", "输出类型"]
+                if all(col in map_df.columns for col in required_map_columns):
+                    for _, row in map_df.iterrows():
+                        if not (pd.isna(row["渠道"]) or pd.isna(row["类型"]) or
+                                pd.isna(row["输出渠道"]) or pd.isna(row["输出类型"])):
+                            self.channel_type_map.append({
+                                "渠道": str(row["渠道"]).strip(),
+                                "类型": str(row["类型"]).strip(),
+                                "输出渠道": str(row["输出渠道"]).strip(),
+                                "输出类型": str(row["输出类型"]).strip()
+                            })
+                else:
+                    missing_cols = [col for col in required_map_columns if col not in map_df.columns]
+                    return None, None, f"映射表中缺少必要的列: {', '.join(missing_cols)}"
+
+                if not self.channel_type_map:
+                    return None, None, "映射表中没有有效数据"
+
+            except ValueError as e:
+                if "Worksheet named '映射' not found" in str(e):
+                    return None, None, f"编码对应关系.xlsx文件中没有找到'映射'工作表"
+                else:
+                    return None, None, f"读取映射表时出错: {str(e)}"
+            except Exception as e:
+                return None, None, f"读取映射表时出错: {str(e)}"
+
             df1 = pd.read_excel(file1_path, sheet_name="Sheet1")
             required_columns = ['打印波次', '店铺', '货品商家编码', '订单类型', '打单员']
             missing_columns = [col for col in required_columns if col not in df1.columns]
@@ -65,33 +93,15 @@ class ExcelContrastProcessor:
             if '打单员' in df1.columns:
                 df1 = df1[df1['打单员'].astype(str).str.contains('打单')]
 
-            if '订单类型' in df1.columns:
-                # 定义有效的订单类型（会被处理的类型）
-                valid_types = ['网店销售', '订单补发', '线下零售']
-
-                # 找到不在有效类型中的订单类型
-                other_types = df1[~df1['订单类型'].astype(str).str.contains('|'.join(valid_types))]
-                if not other_types.empty:
-                    unique_types = other_types['订单类型'].unique()
-                    # 过滤掉空值或空白字符串
-                    unique_types = [str(t).strip() for t in unique_types if str(t).strip()]
-                    if unique_types:
-                        self.messages.append({
-                            "text": f"注意：存在其他订单类型: {', '.join(unique_types)}",
-                            "color": self.COLOR_ERROR
-                        })
-                        print(f"发现其他订单类型: {', '.join(unique_types)}")  # 调试输出
-
             current_mmdd = datetime.now().strftime("%m%d")
-            for idx, row in df1.iterrows():
-                wave_value = row['打印波次']
+            for idx, row in enumerate(df1.itertuples(index=False)):
+                wave_value = getattr(row, '打印波次')
                 if not self.is_empty(wave_value):
                     wave_str = str(wave_value).strip()
-                    if wave_str.startswith("PB25") and len(wave_str) >= 10:
+                    if wave_str.startswith("PB" + datetime.now().strftime("%y")) and len(wave_str) >= 10:
                         wave_mmdd = wave_str[4:8]
                         if wave_mmdd != current_mmdd:
                             self.non_today_waves.add(wave_str)
-                            self.non_today_wave_details[wave_str].append(idx + 2)
 
             if self.non_today_waves:
                 self.messages.append({
@@ -99,55 +109,47 @@ class ExcelContrastProcessor:
                     "color": self.COLOR_INFO
                 })
 
-            df_code = pd.read_excel(code_file_path, sheet_name="Sheet1")
+            df_code = pd.read_excel(code_file_path, sheet_name="编码")
             df_code["优先级"] = df_code["优先级"].ffill()
 
             brush_rows = df_code[df_code["货品商家编码"].astype(str).str.strip() == "刷单"]
             if not brush_rows.empty:
                 self.brush_style = brush_rows.iloc[0]["名称"]
 
-            sub_table_exists = True
-            if os.path.exists(sub_table_path):
-                try:
-                    df_sub = pd.read_excel(sub_table_path, sheet_name="副表数据")
-                    duplicate_messages = []
+            try:
+                color_df = pd.read_excel(code_file_path, sheet_name="颜色")
 
-                    if '排除' in df_sub.columns and '刷单' in df_sub.columns:
-                        common_values = set(df_sub['排除'].dropna().astype(str).str.strip()) & \
-                                        set(df_sub['刷单'].dropna().astype(str).str.strip())
-                        if common_values:
-                            duplicate_messages.append(f"排除和刷单列存在重复数据: {', '.join(common_values)}")
+                # 渠道颜色
+                if "输出渠道" in color_df.columns and "颜色" in color_df.columns:
+                    for _, row in color_df.iterrows():
+                        if not pd.isna(row["输出渠道"]) and not pd.isna(row["颜色"]):
+                            channel = str(row["输出渠道"]).strip()
+                            color = str(row["颜色"]).strip().upper()
+                            self.channel_colors[channel] = Font(color=color)
 
-                    if '排除' in df_sub.columns:
-                        exclude_duplicates = df_sub['排除'].duplicated()
-                        if exclude_duplicates.any():
-                            dup_values = df_sub.loc[exclude_duplicates, '排除'].dropna().unique()
-                            if len(dup_values) > 0:
-                                duplicate_messages.append(f"排除列中存在重复数据: {', '.join(map(str, dup_values))}")
+                # 订单类型颜色（允许同一个sheet复用）
+                if "输出类型" in color_df.columns and "颜色.1" in color_df.columns:
+                    for _, row in color_df.iterrows():
+                        if not pd.isna(row["输出类型"]) and not pd.isna(row["颜色.1"]):
+                            order_type = str(row["输出类型"]).strip()
+                            color = str(row["颜色.1"]).strip().upper()
+                            self.order_type_colors[order_type] = Font(color=color)
 
-                    if '刷单' in df_sub.columns:
-                        brush_duplicates = df_sub['刷单'].duplicated()
-                        if brush_duplicates.any():
-                            dup_values = df_sub.loc[brush_duplicates, '刷单'].dropna().unique()
-                            if len(dup_values) > 0:
-                                duplicate_messages.append(f"刷单列中存在重复数据: {', '.join(map(str, dup_values))}")
+            except ValueError as e:
+                if "Worksheet named '颜色' not found" in str(e):
+                    return None, None, "编码对应关系.xlsx 中未找到 sheet「颜色」"
+                else:
+                    return None, None, f"读取颜色配置时出错: {str(e)}"
+            except Exception as e:
+                return None, None, f"读取颜色配置时出错: {str(e)}"
 
-                    if duplicate_messages:
-                        return None, None, "副表数据错误:\n" + "\n".join(duplicate_messages)
+            # 加载副表数据 - 使用新的处理器（副表保持单独文件）
+            sub_table_error = self.sub_table_handler.load_sub_table()
+            if sub_table_error:
+                return None, None, sub_table_error
 
-                    if '排除' in df_sub.columns:
-                        self.excluded_waves = set(df_sub['排除'].dropna().astype(str).str.strip().unique())
-                    if '刷单' in df_sub.columns:
-                        self.brush_waves = set(df_sub['刷单'].dropna().astype(str).str.strip().unique())
-                except Exception as e:
-                    self.sub_table_messages.append({"text": f"注意：读取副表时出错: {str(e)}", "color": self.COLOR_WARN})
-                    sub_table_exists = False
-            else:
-                self.sub_table_messages.append({"text": "注意：副表不存在", "color": self.COLOR_WARN})
-                sub_table_exists = False
-
-            if sub_table_exists and not (self.excluded_waves or self.brush_waves):
-                self.sub_table_messages.append({"text": "注意：副表无有效波次数据", "color": self.COLOR_WARN})
+            # 添加副表消息
+            self.messages.extend(self.sub_table_handler.sub_table_messages)
 
             return df1, df_code, None
 
@@ -155,7 +157,7 @@ class ExcelContrastProcessor:
             return None, None, f"读取数据时出错: {str(e)}"
 
     def build_code_mappings(self, df_code):
-        self.style_sort = {}  # New: Mapping from style name to sort value
+        self.style_sort = {}
         for _, row in df_code.iterrows():
             code = str(row["货品商家编码"]).strip()
             name = str(row["名称"]).strip()
@@ -164,42 +166,38 @@ class ExcelContrastProcessor:
             self.code_dict[code] = name
             self.priority_dict[code] = pri
             if name not in self.style_sort or sort_val < self.style_sort[name]:
-                self.style_sort[name] = sort_val  # Take the minimum sort value if duplicates
+                self.style_sort[name] = sort_val
 
-    def get_order_channel(self, shop, wave_str=None, row_idx=None):
-        """根据店铺获取订单渠道"""
+    def get_mapped_channel_and_type(self, shop, order_type_tag, wave_str, row_idx):
+        """根据店铺和订单类型获取映射后的渠道和类型"""
         shop = str(shop).strip() if not pd.isna(shop) else ""
+        order_type_tag = str(order_type_tag).strip() if not pd.isna(order_type_tag) else ""
 
-        # 检查是否有/号
-        if '/' not in shop:
-            # 如果没有/号，直接返回"其他"，不再记录波次信息
-            return "其他"
-
-        # 取第一个/号前的内容
-        channel_part = shop.split('/')[0]
-
-        # 新增：如果店铺名第一个/号前两个字为"补发"，则视为"自营"
-        if channel_part.startswith("补发"):
-            return "自营"
-
-        # 取前两个字作为订单渠道
-        if len(channel_part) >= 2:
-            return channel_part[:2]
+        # 从店铺名中提取渠道部分（第一个/号前的内容）
+        if '/' in shop:
+            channel_part = shop.split('/')[0] + "/"
         else:
-            return channel_part
+            channel_part = shop + "/"  # 如果没有斜杠，直接添加斜杠
 
-    def get_order_type(self, tag):
-        """根据订单类型标签获取订单类型"""
-        tag = str(tag).strip() if not pd.isna(tag) else ""
+        # 在映射表中查找匹配项
+        for mapping in self.channel_type_map:
+            if mapping["渠道"] == channel_part and mapping["类型"] == order_type_tag:
+                return mapping["输出渠道"], mapping["输出类型"]
 
-        if "订单补发" in tag:
-            return "补发单"
-        elif "网店销售" in tag or "线下零售" in tag:
-            return "新订单"
-        else:
-            return None
+        # 如果没有找到匹配项，记录到未匹配集合中
+        mapping_key = f"{channel_part}|{order_type_tag}"
+        self.unmatched_mappings[mapping_key].append({
+            "wave": wave_str,
+            "row_idx": row_idx + 2,  # Excel行号（从1开始，加上标题行）
+            "shop": shop,
+            "order_type": order_type_tag
+        })
+
+        # 返回None表示没有匹配项
+        return None, None
 
     def parse_codes_and_quantities(self, product_code):
+        # 解析“货品商家编码”字段，支持复合写法，如 "A*2;B*3;C"
         codes = []
         quantities = {}
         parts = [p.strip() for p in str(product_code).split(';') if p.strip()]
@@ -212,22 +210,23 @@ class ExcelContrastProcessor:
                     code = code_part.strip()
                     codes.append(code)
                     quantities[code] = qty
-                except:
+                except ValueError:
                     codes.append(part)
                     quantities[part] = 1
             else:
                 codes.append(part)
                 quantities[part] = 1
 
-        filtered_codes = [code for code in codes if code not in self.priority_dict or self.priority_dict[code] != 100]
-        return filtered_codes, quantities
+        return codes, quantities
 
     class UniformSelector:
+        # 用于在同一波次 / 同一组合下，实现「公平、均匀」的款式选择策略，避免总是选同一个编码。
         def __init__(self):
             self.group_state = defaultdict(lambda: {
                 'index': 0,
                 'sorted_codes': None,
                 'counters': defaultdict(int),
+                '_index': 0,
                 'max_qty_codes': None
             })
 
@@ -255,8 +254,8 @@ class ExcelContrastProcessor:
                     state['max_qty_codes'] = [code for code in candidates if quantities[code] == max_qty]
 
                 if len(state['max_qty_codes']) > 1:
-                    selected_code = state['max_qty_codes'][state['counters']['_index'] % len(state['max_qty_codes'])]
-                    state['counters']['_index'] += 1
+                    selected_code = state['max_qty_codes'][state['_index'] % len(state['max_qty_codes'])]
+                    state['_index'] += 1
                 else:
                     selected_code = state['max_qty_codes'][0]
                 state['counters'][selected_code] += 1
@@ -267,141 +266,158 @@ class ExcelContrastProcessor:
                 priority_candidates = [code for code in candidates if priority_dict[code] == min_priority]
                 return self.select(priority_candidates, quantities, priority_dict, group_key)
 
-    def get_style(self, product_code, selector):
-        product_code = str(product_code).strip()
-        if not product_code or product_code == "NaN":
-            return "（未匹配到编码）", 0
-
-        code_list, quantities = self.parse_codes_and_quantities(product_code)
-        if not code_list:
-            self.filtered_count += 1
-            return None, 0
-        unmatched_codes = [code for code in quantities if code not in self.priority_dict]
-
-        if unmatched_codes:
-            self.has_unmatched_codes = True
-            if len(unmatched_codes) == len(code_list):
-                return "（未匹配到编码）", 0
-            else:
-                return "（未匹配到部分编码）", 0
-
-        valid_codes = [code for code in code_list if code in self.priority_dict]
-        if not valid_codes:
-            self.has_unmatched_codes = True
-            return "（未匹配到编码）", 0
-
-        sorted_codes = tuple(sorted(valid_codes))
-        selected_code = selector.select(valid_codes, quantities, self.priority_dict, sorted_codes)
-        if selected_code:
-            return self.code_dict[selected_code], quantities[selected_code]
-        else:
-            return "（未匹配到编码）", 0
-
     def process_data(self, df1):
         result_data = []
         selector = self.UniformSelector()
-        data_list = []
         excluded_row_count = 0
-        excluded_waves_with_counts = defaultdict(int)
+        sub_handler = self.sub_table_handler
+        get_mapping = self.get_mapped_channel_and_type
         wave_stats = {
-            'brush_waves': defaultdict(list),
-            'priority100_filtered': defaultdict(list),
-            'priority100_skipped': defaultdict(list)
+            'brush_waves': defaultdict(list)
         }
+        # 未匹配映射的计数器
+        unmapped_row_count = 0
 
         max_sort = max(self.style_sort.values()) if self.style_sort else 999
+
+        # 使用 defaultdict 来收集数据
+        group_data = defaultdict(lambda: defaultdict(int))
 
         for idx, row in df1.iterrows():
             wave_value = row['打印波次']
             wave_str = str(wave_value).strip() if not self.is_empty(wave_value) else None
             shop = str(row.get("店铺", "")).strip()
+            order_type_tag = str(row.get("订单类型", "")).strip()
+            product_code = row["货品商家编码"]
 
             if wave_str and wave_str in self.non_today_waves:
                 continue
 
-            # 获取订单渠道 - 传入波次和行索引
-            order_channel = self.get_order_channel(shop, wave_str, idx)
-            # 获取订单类型
-            order_type = self.get_order_type(row.get("订单类型", ""))
-            if order_type is None:
+            # 使用映射表获取输出渠道和输出类型
+            output_channel, output_type = get_mapping(
+                shop, order_type_tag, wave_str, idx
+            )
+
+            # 如果映射返回None，跳过该行
+            if output_channel is None or output_type is None:
+                unmapped_row_count += 1
                 continue
 
-            if wave_str and wave_str in self.excluded_waves:
-                self.processed_excluded_waves.add(wave_str)
+            # 使用副表处理器检查排除波次
+            if wave_str and sub_handler.is_excluded_wave(wave_str):
                 excluded_row_count += 1
-                excluded_waves_with_counts[wave_str] += 1
                 continue
 
-            if wave_str and wave_str in self.brush_waves:
-                self.processed_brush_waves.add(wave_str)
+            # 使用副表处理器检查刷单波次
+            if wave_str and self.sub_table_handler.is_brush_wave(wave_str):
                 wave_stats['brush_waves'][wave_str].append(idx)
                 style = self.brush_style
-                qty = 1  # Assuming qty=1 for brush waves
-                order_type = "新订单"
-                data_list.append({
-                    "订单渠道": order_channel,
-                    "订单类型": order_type,
-                    "款式": style,
-                    "原始编码": str(row["货品商家编码"]).strip(),
-                    "波次": wave_str,
-                    "数量": qty
-                })
+                key = (output_channel, output_type, style)
+                group_data[key]['单量'] += 1
+                group_data[key]['实际数量'] += 1
             else:
-                code_list, quantities = self.parse_codes_and_quantities(row["货品商家编码"])
-                if not code_list and any(code in self.priority_dict for code in quantities):
-                    wave_stats['priority100_skipped'][wave_str].append(idx)
-                    continue
-                elif code_list and len(code_list) < len(quantities):
-                    wave_stats['priority100_filtered'][wave_str].append(idx)
-
-                style, qty = self.get_style(row["货品商家编码"], selector)
-                if style is None:
+                code_list, quantities = self.parse_codes_and_quantities(product_code)
+                if not code_list:
+                    self.unmatched_waves[wave_str].append((idx + 2, []))  # 空编码视为未匹配
                     continue
 
-                if style == "（未匹配到编码）":
-                    self.unmatched_waves[wave_str].append(idx + 2)
-                elif style == "（未匹配到部分编码）":
-                    self.partial_unmatched_waves[wave_str].append(idx + 2)
+                unmatched_codes = [code for code in code_list if code not in self.code_dict]
+                if unmatched_codes:
+                    self.has_unmatched_codes = True
+                    if len(unmatched_codes) == len(code_list):
+                        self.unmatched_waves[wave_str].append((idx + 2, unmatched_codes))
+                        continue
+                    else:
+                        self.partial_unmatched_waves[wave_str].append((idx + 2, unmatched_codes))
 
-                data_list.append({
-                    "订单渠道": order_channel,
-                    "订单类型": order_type,
-                    "款式": style,
-                    "原始编码": str(row["货品商家编码"]).strip(),
-                    "波次": wave_str,
-                    "数量": qty
-                })
+                valid_codes = [code for code in code_list if code in self.code_dict]
+                if not valid_codes:
+                    continue
+
+                # 为每个有效编码累加实际数量
+                for code in valid_codes:
+                    style = self.code_dict[code]
+                    key = (output_channel, output_type, style)
+                    group_data[key]['实际数量'] += quantities[code]
+
+                # 选择主编码并累加单量
+                min_pri = min(self.priority_dict[c] for c in valid_codes)
+                candidates = [c for c in valid_codes if self.priority_dict[c] == min_pri]
+                group_key = tuple(sorted(candidates))
+                main_code = selector.select(candidates, quantities, self.priority_dict, group_key)
+                if main_code:
+                    main_style = self.code_dict[main_code]
+                    key = (output_channel, output_type, main_style)
+                    group_data[key]['单量'] += 1
+
+        # 检查未匹配的映射关系
+        if self.unmatched_mappings:
+            warning_msg = f"警告：发现 {unmapped_row_count} 行数据没有匹配的订单类型组合：\n"
+
+            # 按渠道分组显示未匹配的行
+            for mapping_key, rows in self.unmatched_mappings.items():
+                channel, order_type = mapping_key.split("|")
+                row_numbers = sorted([r["row_idx"] for r in rows])
+
+                # 只显示前10行，避免消息过长
+                if len(row_numbers) > 10:
+                    row_display = f"{', '.join(map(str, row_numbers[:10]))}, ...等{len(row_numbers)}行"
+                else:
+                    row_display = ', '.join(map(str, row_numbers))
+
+                warning_msg += f"  渠道: {channel}, 类型: {order_type}, 行号: {row_display}\n"
+
+            self.messages.append({
+                "text": warning_msg.strip(),
+                "color": self.COLOR_WARN
+            })
 
         if self.unmatched_waves:
-            unmatched_waves = sorted(self.unmatched_waves.keys())
-            unmatched_count = sum(len(rows) for rows in self.unmatched_waves.values())
+            # 汇总所有未匹配的行和编码
+            all_unmatched = []
+            for items in self.unmatched_waves.values():
+                all_unmatched.extend(items)
+
+            all_unmatched_sorted = sorted(all_unmatched, key=lambda x: x[0])
+            unmatched_count = len(all_unmatched_sorted)
+
+            details = []
+            for row, codes in all_unmatched_sorted[:20]:
+                codes_str = ', '.join(codes) if codes else '无编码'
+                details.append(f"行{row}: {codes_str}")
+
+            if unmatched_count > 20:
+                details.append(f"等共 {unmatched_count} 行")
+
+            details_str = '\n'.join(details)
+
             self.messages.append({
-                "text": f"发现 {unmatched_count} 行数据未匹配到任何编码，波次号：{'、'.join(unmatched_waves)}",
+                "text": f"发现 {unmatched_count} 行数据未匹配到任何编码，详情：\n{details_str}",
                 "color": self.COLOR_ERROR
             })
 
         if self.partial_unmatched_waves:
-            partial_waves = sorted(self.partial_unmatched_waves.keys())
-            partial_count = sum(len(rows) for rows in self.partial_unmatched_waves.values())
+            # 汇总所有部分未匹配的行和编码
+            all_partial = []
+            for items in self.partial_unmatched_waves.values():
+                all_partial.extend(items)
+
+            all_partial_sorted = sorted(all_partial, key=lambda x: x[0])
+            partial_count = len(all_partial_sorted)
+
+            details = []
+            for row, codes in all_partial_sorted[:20]:
+                codes_str = ', '.join(codes)
+                details.append(f"行{row}: {codes_str}")
+
+            if partial_count > 20:
+                details.append(f"等共 {partial_count} 行")
+
+            details_str = '\n'.join(details)
+
             self.messages.append({
-                "text": f"发现 {partial_count} 行数据部分编码未匹配，波次号：{'、'.join(partial_waves)}",
+                "text": f"发现 {partial_count} 行数据部分编码未匹配，详情：\n{details_str}",
                 "color": self.COLOR_ERROR
-            })
-
-        if wave_stats['priority100_filtered']:
-            filtered_waves = sorted(wave_stats['priority100_filtered'].keys())
-            filtered_count = sum(len(rows) for rows in wave_stats['priority100_filtered'].values())
-            self.messages.append({
-                "text": f"已处理 {filtered_count} 行数据（排除了其中的优先级100编码）:{'，'.join(filtered_waves)}",
-                "color": self.COLOR_INFO
-            })
-
-        if wave_stats['priority100_skipped']:
-            skipped_waves = sorted(wave_stats['priority100_skipped'].keys())
-            skipped_count = sum(len(rows) for rows in wave_stats['priority100_skipped'].values())
-            self.messages.append({
-                "text": f"已跳过 {skipped_count} 行数据（仅包含优先级100编码）:{'，'.join(skipped_waves)}",
-                "color": self.COLOR_INFO
             })
 
         if wave_stats['brush_waves']:
@@ -412,59 +428,43 @@ class ExcelContrastProcessor:
                 "color": self.COLOR_INFO
             })
 
-        if self.processed_excluded_waves:
-            excluded_waves_sorted = sorted(self.processed_excluded_waves)
+        # 获取副表处理器中的已处理排除波次
+        if self.sub_table_handler.processed_excluded_waves:
+            excluded_waves_sorted = sorted(self.sub_table_handler.processed_excluded_waves)
             wave_details = [f"{wave}" for wave in excluded_waves_sorted]
             self.messages.append({
                 "text": f"已排除 {excluded_row_count} 条数据，来自波次: {', '.join(wave_details)}",
                 "color": self.COLOR_INFO
             })
 
-        # Append sub-table messages at the end
-        if self.brush_waves:
-            unmatched_brush = self.brush_waves - self.processed_brush_waves
-            if unmatched_brush:
-                self.sub_table_messages.append({
-                    "text": f"警告：副表中存在没有匹配到的刷单波次: {', '.join(sorted(unmatched_brush))}",
-                    "color": self.COLOR_ERROR
-                })
+        # 获取副表警告信息并添加到主消息中
+        sub_table_warnings = self.sub_table_handler.get_warnings()
+        self.messages.extend(sub_table_warnings)
 
-        if self.excluded_waves:
-            unmatched_excluded = self.excluded_waves - self.processed_excluded_waves
-            if unmatched_excluded:
-                self.sub_table_messages.append({
-                    "text": f"警告：副表中存在没有匹配到的排除波次:{'，'.join(sorted(unmatched_excluded))}",
-                    "color": self.COLOR_ERROR
-                })
-
-        # Add sub-table messages to the main messages list
-        self.messages.extend(self.sub_table_messages)
-
-        # 订单渠道优先级
-        channel_priority = {"自营": 0, "代发": 1, "分销": 2, "其他": 3}  # 添加"其他"优先级为3
+        # 创建优先级映射（按字母顺序排序）
+        channel_priority = {"自营": 0, "分销": 1, "代发": 2}
         # 订单类型优先级
-        order_type_priority = {"新订单": 0, "补发单": 1}
+        order_type_priority = {"新订单": 0, "补发单": 1, "批采单": 2}
 
-        if data_list:
-            temp_df = pd.DataFrame(data_list)
-            group_counts = temp_df.groupby(["订单渠道", "订单类型", "款式"]).agg(
-                单量=('数量', 'count'),
-                实际数量=('数量', 'sum')
-            ).reset_index()
+        # 收集只有单量 > 0 的组
+        group_list = []
+        for (channel, otype, style), data in group_data.items():
+            if data['单量'] > 0:
+                group_list.append({
+                    "订单渠道": channel,
+                    "订单类型": otype,
+                    "款式": style,
+                    "单量": data['单量'],
+                    "实际数量": data['实际数量'],
+                    "订单渠道优先级": channel_priority.get(channel, 999),
+                    "订单类型优先级": order_type_priority.get(otype, 999),
+                    "款式排序": self.style_sort.get(style, max_sort + 1)
+                })
 
-            # 创建排序键：订单渠道优先级 + 订单类型优先级 + 款式排序值
-            group_counts["订单渠道优先级"] = group_counts["订单渠道"].map(channel_priority)
-            group_counts["订单类型优先级"] = group_counts["订单类型"].map(order_type_priority)
-
-            # 为每个款式添加排序值
-            group_counts["款式排序"] = group_counts["款式"].map(self.style_sort)
-
-            # 对于没有在编码对应关系中的款式，设置一个较大的排序值
-            group_counts["款式排序"] = group_counts["款式排序"].fillna(max_sort + 1)
-
+        if group_list:
+            group_counts = pd.DataFrame(group_list)
             # 按照订单渠道优先级、订单类型优先级和款式排序值升序排列
             group_counts = group_counts.sort_values(["订单渠道优先级", "订单类型优先级", "款式排序"])
-
             # 删除临时列
             group_counts = group_counts.drop(columns=["订单渠道优先级", "订单类型优先级", "款式排序"])
 
@@ -479,9 +479,13 @@ class ExcelContrastProcessor:
                     row["款式"] == "空值"
                 ])
 
-        return result_data, []
+        return {
+            "data": result_data,
+            "messages": self.messages
+        }
 
-    def create_output_excel(self, result_data, extra_result_data=None):
+    def create_output_excel(self, result_data):
+        # 根据处理结果生成最终Excel文件：
         wb = Workbook()
         ws = wb.active
         ws.title = "汇总结果"
@@ -506,22 +510,7 @@ class ExcelContrastProcessor:
             "red": Font(color="FF0000")
         }
 
-        # 订单类型颜色设置
-        order_type_colors = {
-            "新订单": Font(color="46C26F"),  # 绿色
-            "补发单": Font(color="F0A800")  # 橙色
-        }
-
-        # 订单渠道颜色设置
-        channel_colors = {
-            "自营": Font(color="EB5050"),  # 红色
-            "代发": Font(color="9999FF"),  # 蓝色
-            "分销": Font(color="F0A800"),  # 橙色
-            "其他": Font(color="0000FF")  # 新增：其他渠道用蓝色字体
-        }
-
-        # Restart data writing for alignment
-        ws.delete_rows(2, ws.max_row)  # Clear appended data
+        ws.delete_rows(2, ws.max_row)
 
         max_main_rows = len(result_df) if result_df is not None else 0
 
@@ -536,11 +525,9 @@ class ExcelContrastProcessor:
                 result_df.iloc[main_idx]["实际数量"]
             ]
 
-            # Write main data
             for col, val in enumerate(main_row, start=1):
                 ws.cell(row=actual_row, column=col, value=val)
 
-            # Apply colors for unmatched/empty - font red for col 3-5
             if result_df.iloc[main_idx]["空值行标记"]:
                 for col in range(3, 6):
                     ws.cell(row=actual_row, column=col).font = color_map["red"]
@@ -548,19 +535,16 @@ class ExcelContrastProcessor:
                 for col in range(3, 6):
                     ws.cell(row=actual_row, column=col).font = color_map["red"]
 
-            # Apply order channel color to col 1
             cell_a = ws.cell(row=actual_row, column=1)
             val_a = cell_a.value
-            if val_a in channel_colors:
-                cell_a.font = channel_colors[val_a]
+            if val_a in self.channel_colors:
+                cell_a.font = self.channel_colors[val_a]
 
-            # Apply order type color to col 2
             cell_b = ws.cell(row=actual_row, column=2)
             val_b = cell_b.value
-            if val_b in order_type_colors:
-                cell_b.font = order_type_colors[val_b]
+            if val_b in self.order_type_colors:
+                cell_b.font = self.order_type_colors[val_b]
 
-        # Now append empty row
         ws.append([])
 
         if self.messages:
@@ -591,19 +575,36 @@ class ExcelContrastProcessor:
             return False
 
     def process(self):
+        start_time = time.time()
+
         try:
             df1, df_code, error = self.load_data()
             if error:
                 return False, error
+
             self.build_code_mappings(df_code)
-            result_data, extra_result_data = self.process_data(df1)
-            output_path = self.create_output_excel(result_data, extra_result_data)
+
+            result = self.process_data(df1)
+            result_data = result["data"]
+
+            elapsed_time = time.time() - start_time
+            self.messages.insert(0, {
+                "text": f"计算用时：{elapsed_time:.2f} 秒",
+                "color": self.COLOR_INFO
+            })
+
+            output_path = self.create_output_excel(result_data)
             self.open_file_windows(output_path)
+
             return True, "处理完成，已自动打开输出文件"
+
+
         except Exception as e:
             return False, f"处理过程中出错: {str(e)}"
 
 
 def group_calculation():
     processor = ExcelContrastProcessor()
-    return processor.process()
+    success, message = processor.process()
+
+    return success, message
