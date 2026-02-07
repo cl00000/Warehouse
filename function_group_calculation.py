@@ -352,7 +352,7 @@ class ExcelContrastProcessor:
 
         # 检查未匹配的映射关系
         if self.unmatched_mappings:
-            warning_msg = f"警告：发现 {unmapped_row_count} 行数据没有匹配的订单类型组合：\n"
+            warning_details = []
 
             # 按渠道分组显示未匹配的行
             for mapping_key, rows in self.unmatched_mappings.items():
@@ -365,11 +365,15 @@ class ExcelContrastProcessor:
                 else:
                     row_display = ', '.join(map(str, row_numbers))
 
-                warning_msg += f"  渠道: {channel}, 类型: {order_type}, 行号: {row_display}\n"
+                warning_details.append(f"渠道: {channel}, 类型: {order_type}, 行号: {row_display}")
+
+            # 用竖线分隔所有条目
+            warning_msg = f"警告：发现 {unmapped_row_count} 行数据没有匹配的订单类型组合： | " + ' | '.join(
+                warning_details)
 
             self.messages.append({
                 "text": warning_msg.strip(),
-                "color": self.COLOR_WARN
+                "color": self.COLOR_ERROR
             })
 
         if self.unmatched_waves:
@@ -389,10 +393,11 @@ class ExcelContrastProcessor:
             if unmatched_count > 20:
                 details.append(f"等共 {unmatched_count} 行")
 
-            details_str = '\n'.join(details)
+            # 使用竖线分隔
+            details_str = ' | '.join(details)
 
             self.messages.append({
-                "text": f"发现 {unmatched_count} 行数据未匹配到任何编码，详情：\n{details_str}",
+                "text": f"发现 {unmatched_count} 行数据未匹配到任何编码，详情：{details_str}",
                 "color": self.COLOR_ERROR
             })
 
@@ -413,10 +418,11 @@ class ExcelContrastProcessor:
             if partial_count > 20:
                 details.append(f"等共 {partial_count} 行")
 
-            details_str = '\n'.join(details)
+            # 使用竖线分隔
+            details_str = ' | '.join(details)
 
             self.messages.append({
-                "text": f"发现 {partial_count} 行数据部分编码未匹配，详情：\n{details_str}",
+                "text": f"发现 {partial_count} 行数据部分编码未匹配，详情：{details_str}",
                 "color": self.COLOR_ERROR
             })
 
@@ -608,3 +614,5 @@ def group_calculation():
     success, message = processor.process()
 
     return success, message
+
+
