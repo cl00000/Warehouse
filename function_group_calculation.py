@@ -5,7 +5,7 @@ from datetime import datetime
 import time
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
-from sub_table_handler import SubTableHandler
+from function_group_sub_table import SubTableHandler
 
 
 class ExcelContrastProcessor:
